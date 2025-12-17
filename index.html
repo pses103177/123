@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>校園問題追蹤平台 - 具象化功能修正版</title>
+    
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 引入 React 和 ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- 引入 Babel -->
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- 自定義樣式 -->
+    <style>
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        .fade-in { animation: fadeIn 0.4s ease-in-out; }
+        .slide-up { animation: slideUp 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        
+        .school-bg {
+            background-color: #f0f2f5;
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.92)),
+                url('https://images.unsplash.com/photo-1562774053-701939374585?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80');
+            background-size: cover;
+            background-position: center;
+        }
+
+        /* 橫向時間軸指向箭頭 */
+        .arrow-top::before {
+            content: "";
+            position: absolute;
+            top: -5px;
+            left: 50%;
+            margin-left: -5px;
+            width: 10px;
+            height: 10px;
+            background: white;
+            border-left: 1px solid #e5e7eb;
+            border-top: 1px solid #e5e7eb;
+            transform: rotate(45deg);
+        }
+
+        .glow-text { text-shadow: 0 0 10px rgba(59, 130, 246, 0.3); }
+        .tab-transition { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans text-slate-800">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // ==========================================
+        // 1. 全域配置與資料範本
+        // ==========================================
+        const STATUS_ORDER = ['pending', 'reviewing', 'negotiating', 'resolved', 'reconsidering'];
+        const STATUS_STATS = {
+            pending: { label: '待審核', color: 'bg-gray-100 text-gray-600', barColor: 'bg-gray-400', defaultProgress: 10 },
+            reviewing: { label: '研議中', color: 'bg-blue-100 text-blue-600', barColor: 'bg-blue-500', defaultProgress: 45 },
+            negotiating: { label: '協商中', color: 'bg-purple-100 text-purple-600', barColor: 'bg-purple-500', defaultProgress: 75 },
+            resolved: { label: '已完成', color: 'bg-green-100 text-green-600', barColor: 'bg-green-500', defaultProgress: 100 },
+            reconsidering: { label: '覆議中', color: 'bg-orange-100 text-orange-600', barColor: 'bg-orange-500', defaultProgress: 85 }
+        };
+
+        const DEFAULT_USERS_CSV = `username,password,name,role,department
+superadmin,super123,總管理員,superadmin,校務決策中心
+admin,admin123,系統管理員,admin,資訊中心
+teacher1,t123,王老師,teacher,教務處
+s1101,s1101,林同學,student,資工系
+s1102,s1102,陳同學,student,電機系`;
+
+        const DEFAULT_ISSUES_CSV = `id,caseId,title,cat,content,author,anon,status,votes,date,deadline,timeline,isSensitive,progress,type,location,deviceType
+1,2023-1218-001,延長圖書館開放時間,教務,期中考週讀書空間不足。,林同學,false,negotiating,156,2023/12/18,2023/12/25,"[{""status"":""pending"",""label"":""待審核"",""date"":""2023/12/18 09:30"",""note"":""系統自動收件""},{""status"":""reviewing"",""label"":""研議中"",""date"":""2023/12/19 14:00"",""note"":""權益部確認受理""},{""status"":""negotiating"",""label"":""協商中"",""date"":""2023/12/20 10:15"",""note"":""已排程與館長會議""}]",false,75,general,,
+2,2023-1219-099,飲水機故障報修,總務,二教三樓飲水機噴水異常。,匿名,true,pending,12,2023/12/19,2023/12/26,"[{""status"":""pending"",""label"":""待審核"",""date"":""2023/12/19 10:00"",""note"":""已收到維修通報""}]",false,10,maintenance,第二教學大樓3F,飲水機`;
+
+        const DEFAULT_NOTICES_CSV = `id,title,content,date,priority,author
+1,系統升級公告,本週末將進行系統維護。,2023/12/18,high,admin`;
+
+        // ==========================================
+        // 2. 通用圖示元件
+        // ==========================================
+        const Icon = ({ path, className, size = 20 }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                {path}
+            </svg>
+        );
+        
+        const icons = {
+            user: <><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></>,
+            lock: <><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>,
+            shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>,
+            logOut: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></>,
+            info: <><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></>,
+            wrench: <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>,
+            gavel: <><path d="M14 5l6.5 6.5"/><path d="M2 14.5l6.5 6.5"/><path d="M20 20L10 10"/><path d="M22 2l-3.5 3.5"/><path d="M11 5l-7 7 2.5 2.5 7-7L11 5z"/></>,
+            plus: <><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>,
+            message: <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>,
+            trash: <><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></>,
+            bell: <><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></>,
+            logo: <><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></>,
+            hash: <><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></>,
+            calendar: <><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/></>,
+            cpu: <><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/></>,
+            settings: <><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.47a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.39a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></>,
+            zap: <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>,
+            chevronDown: <polyline points="6 9 12 15 18 9"/>,
+            chevronUp: <polyline points="18 15 12 9 6 15"/>,
+            chevronLeft: <polyline points="15 18 9 12 15 6"/>,
+            chevronRight: <polyline points="9 18 15 12 9 6"/>,
+            alertTriangle: <><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>
+        };
+
+        const parseCSV = (text) => {
+            const lines = text.trim().split('\n');
+            if (lines.length < 2) return [];
+            const header = lines[0].trim().split(',');
+            const result = [];
+            for (let i = 1; i < lines.length; i++) {
+                if (!lines[i].trim()) continue;
+                const row = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(val => {
+                    let s = val.trim();
+                    if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
+                    return s.replace(/""/g, '"');
+                });
+                const obj = {};
+                header.forEach((h, index) => {
+                    let value = row[index];
+                    if (h === 'timeline' || h === 'comments') {
+                        try { value = JSON.parse(value || "[]"); } catch (e) { value = []; }
+                    }
+                    if (h === 'anon' || h === 'isSensitive') value = value === 'true';
+                    if (h === 'votes' || h === 'progress' || h === 'id') value = Number(value);
+                    obj[h] = value;
+                });
+                result.push(obj);
+            }
+            return result;
+        };
+
+        // ==========================================
+        // 3. 子元件
+        // ==========================================
+
+        const Clock = () => {
+            const [time, setTime] = useState(new Date());
+            useEffect(() => {
+                const timer = setInterval(() => setTime(new Date()), 1000);
+                return () => clearInterval(timer);
+            }, []);
+            return (
+                <div className="flex flex-col items-end px-3 border-l border-slate-700/50">
+                    <span className="text-[9px] text-slate-400 font-mono tracking-tighter uppercase">{time.getFullYear()}/{String(time.getMonth()+1).padStart(2,'0')}/{String(time.getDate()).padStart(2,'0')}</span>
+                    <span className="text-lg font-bold text-blue-100 font-mono leading-none glow-text">{String(time.getHours()).padStart(2,'0')}:{String(time.getMinutes()).padStart(2,'0')}:{String(time.getSeconds()).padStart(2,'0')}</span>
+                </div>
+            );
+        };
+
+        const Modal = ({ config }) => {
+            if (!config) return null;
+            return (
+                <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] fade-in backdrop-blur-sm p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl p-7 w-full max-w-sm slide-up border border-gray-100 overflow-hidden relative">
+                        <div className="flex items-center gap-3 mb-4 text-slate-800 font-bold text-xl">
+                            <div className="p-2 bg-blue-50 rounded-xl text-blue-600"><Icon path={icons.info} size={24} /></div>
+                            {config.title}
+                        </div>
+                        {config.type === 'progress' ? (
+                            <div className="py-2">
+                                <div className="flex justify-between text-xs text-gray-500 mb-2 font-mono">
+                                    <span>處理進度 {Math.round((config.current/config.total)*100)}%</span>
+                                    <span>{config.current}/{config.total}</span>
+                                </div>
+                                <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden shadow-inner">
+                                    <div className="bg-gradient-to-r from-blue-500 to-blue-700 h-full transition-all duration-75" style={{width:`${(config.current/config.total)*100}%`}}></div>
+                                </div>
+                            </div>
+                        ) : (
+                            <p className="text-gray-600 text-sm mb-8 leading-relaxed ml-1">{config.message}</p>
+                        )}
+                        <div className="flex justify-end gap-3">
+                            {config.onCancel && <button onClick={config.onCancel} className="px-5 py-2.5 text-gray-500 font-bold hover:bg-gray-100 rounded-2xl transition-colors">取消</button>}
+                            <button onClick={config.onConfirm} className="px-7 py-2.5 bg-slate-900 text-white font-bold rounded-2xl hover:bg-slate-800 shadow-lg active:scale-95 transition-all">確定</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const EditableLogo = ({ src, onUpload, canEdit }) => {
+            const fileInputRef = useRef(null);
+            const [loadError, setLoadError] = useState(false);
+            useEffect(() => setLoadError(false), [src]);
+            const handleFileChange = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => { onUpload(e.target.result); setLoadError(false); };
+                    reader.readAsDataURL(file);
+                }
+            };
+            return (
+                <div 
+                    className={`w-32 h-14 bg-white text-blue-900 flex items-center justify-center shadow-lg border-2 border-blue-100 overflow-hidden relative group flex-shrink-0 ${canEdit ? 'cursor-pointer' : ''}`}
+                    onClick={() => canEdit && fileInputRef.current.click()}
+                >
+                    {src && !loadError ? <img src={src} alt="Logo" className="w-full h-full object-cover" onError={() => setLoadError(true)} /> : (
+                        <div className="flex flex-col items-center justify-center w-full h-full bg-slate-50">
+                            <Icon path={icons.logo} size={28} />
+                            {canEdit && <span className="text-[10px] text-gray-400 mt-0.5 scale-90">點擊上傳</span>}
+                        </div>
+                    )}
+                    {canEdit && <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />}
+                </div>
+            );
+        };
+
+        const TimelineItem = ({ ev, isLast, hasAccess }) => {
+            const [isExpanded, setIsExpanded] = useState(false);
+            const isReconsideration = ev.status === 'reconsidering';
+            return (
+                <div className="flex flex-col items-center min-w-[160px] max-w-[220px] flex-shrink-0 group relative">
+                    <div className="mb-2 text-center">
+                        <span className="text-[10px] font-bold text-gray-500 bg-gray-100 border border-gray-200 px-2 py-0.5 rounded-full shadow-sm">{ev.date.split(' ')[0]}</span>
+                    </div>
+                    <div className={`w-3.5 h-3.5 rounded-full border-2 border-white shadow-md z-10 box-content transition-all duration-300 ${isLast ? 'bg-blue-600 scale-125 ring-4 ring-blue-100' : isReconsideration ? 'bg-orange-500' : 'bg-gray-300'}`}></div>
+                    <div 
+                        onClick={() => setIsExpanded(!isExpanded)}
+                        className={`mt-3 bg-white p-3 rounded-2xl border border-gray-100 shadow-sm text-xs text-center w-full relative arrow-top hover:shadow-lg transition-all cursor-pointer ${isExpanded ? 'ring-2 ring-blue-100' : ''} ${isReconsideration ? 'bg-orange-50 border-orange-100' : ''}`}
+                    >
+                        <div className={`absolute -top-1.5 left-1/2 -translate-x-1/2 w-2.5 h-2.5 border-t border-l transform rotate-45 ${isReconsideration ? 'bg-orange-50 border-orange-100' : 'bg-white border-gray-100'}`}></div>
+                        <div className={`font-bold mb-1 text-sm flex items-center justify-center gap-1 ${isReconsideration ? 'text-orange-700' : 'text-slate-800'}`}>
+                            {isReconsideration && <Icon path={icons.gavel} size={12}/>}
+                            {ev.label}
+                        </div>
+                        <div className="text-[9px] text-gray-400 font-mono mb-2 border-b border-gray-50/50 pb-1">{ev.date.split(' ')[1]}</div>
+                        <div className={`text-gray-600 text-[11px] leading-relaxed text-left break-words overflow-hidden transition-all duration-300 ${isExpanded ? 'max-h-96' : 'max-h-[3.6em]'}`}>
+                            {hasAccess ? ev.note : "內容受隱私保護"}
+                        </div>
+                        <div className="mt-1 flex justify-center text-gray-300 group-hover:text-blue-400 transition-colors">
+                            {isExpanded ? <Icon path={icons.chevronUp} size={14}/> : <Icon path={icons.chevronDown} size={14}/>}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const TimelineSection = ({ item, hasAccess }) => {
+            const scrollRef = useRef(null);
+            const [showLeft, setShowLeft] = useState(false);
+            const [showRight, setShowRight] = useState(true);
+            const scroll = (dir) => { if (scrollRef.current) scrollRef.current.scrollBy({ left: dir === 'left' ? -300 : 300, behavior: 'smooth' }); };
+            const handleScroll = () => {
+                if (scrollRef.current) {
+                    const { scrollLeft, scrollWidth, clientWidth } = scrollRef.current;
+                    setShowLeft(scrollLeft > 5);
+                    setShowRight(scrollLeft < scrollWidth - clientWidth - 15);
+                }
+            };
+            return (
+                <div className="mb-4 group/timeline relative">
+                    <h4 className="text-[11px] font-bold text-gray-400 mb-3 uppercase tracking-widest flex items-center gap-2 px-1"><Icon path={icons.message} size={14}/> 處理歷程與覆議軌跡</h4>
+                    <div className="relative">
+                        {showLeft && <button onClick={() => scroll('left')} className="absolute left-0 top-1/2 -translate-y-1/2 z-20 bg-white/95 p-2 rounded-full shadow-xl border border-gray-100 text-blue-600 flex items-center justify-center backdrop-blur-md hover:scale-110 active:scale-95 transition-all"><Icon path={icons.chevronLeft} size={20}/></button>}
+                        {showRight && <button onClick={() => scroll('right')} className="absolute right-0 top-1/2 -translate-y-1/2 z-20 bg-white/95 p-2 rounded-full shadow-xl border border-gray-100 text-blue-600 flex items-center justify-center backdrop-blur-md hover:scale-110 active:scale-95 transition-all"><Icon path={icons.chevronRight} size={20}/></button>}
+                        <div ref={scrollRef} onScroll={handleScroll} className="flex items-start overflow-x-auto pb-6 scrollbar-hide space-x-5 pl-1 pt-2 scroll-smooth">
+                            <div className="absolute top-[29px] left-0 w-full h-0.5 bg-gray-200/60 -z-10"></div> 
+                            {item.timeline.map((ev, idx) => (
+                                <TimelineItem key={idx} ev={ev} isLast={idx === item.timeline.length - 1} hasAccess={hasAccess} />
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const LoginScreen = ({ onLogin, userDb, customLogo, notices }) => {
+            const [username, setUsername] = useState("");
+            const [password, setPassword] = useState("");
+            const [error, setError] = useState("");
+            return (
+                <div className="min-h-screen school-bg flex flex-col font-sans text-slate-800">
+                    <div className="bg-slate-900 text-white shadow-xl p-4 flex justify-between items-center border-b border-white/5">
+                        <div className="flex items-center gap-4">
+                            <EditableLogo src={customLogo} onUpload={()=>{}} canEdit={false} />
+                            <div><div className="font-bold tracking-widest text-lg">真理大學學生會</div><div className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-medium">Issue Tracking System</div></div>
+                        </div>
+                        <Clock />
+                    </div>
+                    <div className="flex-1 flex items-center justify-center p-4">
+                        <div className="bg-white/80 backdrop-blur-md w-full max-w-4xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col md:flex-row slide-up border border-white/50 min-h-[500px]">
+                            <div className="md:w-1/2 bg-slate-50/50 p-10 flex flex-col justify-between border-r border-gray-100">
+                                <div>
+                                    <h3 className="text-xl font-bold text-slate-700 mb-6 flex items-center gap-2"><Icon path={icons.bell} className="text-blue-600" size={22} /> 系統公告</h3>
+                                    <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 scrollbar-hide">
+                                        {notices.map(n => (
+                                            <div key={n.id} className={`p-4 rounded-2xl bg-white shadow-sm border-l-4 ${n.priority === 'high' ? 'border-red-500' : 'border-blue-500'}`}>
+                                                <div className="font-bold text-slate-800 text-sm mb-1">{n.title}</div>
+                                                <div className="text-xs text-gray-500 leading-relaxed">{n.content}</div>
+                                                <div className="text-[9px] text-gray-400 mt-2 text-right">{n.date}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="md:w-1/2 p-10 md:p-14 bg-white/40 flex flex-col justify-center">
+                                <div className="text-center mb-10"><h2 className="text-3xl font-black text-slate-800 tracking-tight">身分驗證</h2><div className="h-1.5 w-10 bg-blue-600 mx-auto mt-3 rounded-full"></div></div>
+                                <form onSubmit={(e)=>{e.preventDefault(); const u = userDb.find(x=>x.username===username && x.password===password); if(u) onLogin(u); else setError("帳號或密碼錯誤");}} className="space-y-6">
+                                    <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full px-5 py-4 rounded-2xl bg-white/50 border border-gray-200 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm shadow-sm" placeholder="請輸入帳號" />
+                                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full px-5 py-4 rounded-2xl bg-white/50 border border-gray-200 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm shadow-sm" placeholder="請輸入密碼" />
+                                    {error && <div className="text-red-600 text-xs text-center font-bold bg-red-50 py-3 rounded-2xl border border-red-100 slide-up">{error}</div>}
+                                    <button className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-4 rounded-2xl shadow-xl shadow-slate-200 transition-all active:scale-95 text-base tracking-widest mt-4">登入系統</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const MainApp = ({ currentUser, onLogout, userDb, setUserDb, notices, showAlert, showConfirm, showModal, customLogo, setCustomLogo }) => {
+            const [view, setView] = useState('board');
+            const [expandedId, setExpandedId] = useState(null);
+            const [adminUpdate, setAdminUpdate] = useState({ status: 'reviewing', note: '', progress: 45 });
+            const [searchQuery, setSearchQuery] = useState("");
+            const [userTab, setUserTab] = useState('superadmin');
+            const [systemSettings, setSystemSettings] = useState({ apiKey: 'my_secret_key', maxConnections: 20, timeout: 30, debug: true });
+            
+            // 重要：修正 newUser 遺漏宣告
+            const [newUser, setNewUser] = useState({ username: "", password: "", name: "", role: "student", department: "" });
+            
+            // 具象化通報狀態
+            const [formType, setFormType] = useState('general');
+            const [form, setForm] = useState({ title: "", cat: "生活", content: "", anon: false, isSensitive: false, location: "", deviceType: "", priority: "一般" });
+            
+            const [issues, setIssues] = useState([]);
+            useEffect(() => setIssues(parseCSV(DEFAULT_ISSUES_CSV)), []);
+
+            useEffect(() => {
+                if (view === 'submit') setFormType('general');
+                if (view === 'maintenance') setFormType('maintenance');
+            }, [view]);
+
+            const isSuperAdmin = currentUser.role === 'superadmin';
+            const isAdminAccess = currentUser.role === 'admin' || isSuperAdmin;
+            const canManageIssues = isAdminAccess || currentUser.role === 'teacher';
+
+            const roleConfig = { student: { label: "學生", color: "bg-blue-100 text-blue-800" }, teacher: { label: "老師", color: "bg-green-100 text-green-800" }, admin: { label: "管理員", color: "bg-red-100 text-red-800" }, superadmin: { label: "總管理員", color: "bg-amber-100 text-amber-800 border-amber-200" } };
+            const categoryConfig = { '教務': 'bg-blue-100 text-blue-700 border-blue-200', '學務': 'bg-green-100 text-green-700 border-green-200', '總務': 'bg-orange-100 text-orange-700 border-orange-200', '生活': 'bg-yellow-100 text-yellow-700 border-yellow-200', '環境': 'bg-teal-100 text-teal-700 border-teal-200', '校安': 'bg-red-100 text-red-700 border-red-200' };
+
+            const quickTemplates = {
+                student: [{ name: '資工系學生', val: { department: '資工系', prefix: 's113' } }, { name: '財經系學生', val: { department: '財經系', prefix: 'f113' } }],
+                teacher: [{ name: '教務處人員', val: { department: '教務處', prefix: 't' } }, { name: '學務處人員', val: { department: '學務處', prefix: 't' } }],
+                admin: [{ name: '資訊中心人員', val: { department: '資訊中心', prefix: 'admin' } }],
+                superadmin: []
+            };
+
+            const handleReportSubmit = (e) => {
+                e.preventDefault();
+                const now = new Date();
+                const ts = `${now.getFullYear()}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getDate().toString().padStart(2,'0')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+                const newIssue = { 
+                    id: Date.now(), 
+                    caseId: `${now.getFullYear()}-${(now.getMonth()+1).toString().padStart(2,'0')}${now.getDate().toString().padStart(2,'0')}-${Math.floor(Math.random()*999).toString().padStart(3,'0')}`,
+                    ...form,
+                    author: form.anon ? "匿名" : currentUser.name,
+                    status: 'pending', progress: 10, votes: 0, date: ts.split(' ')[0], type: formType,
+                    timeline: [{ status: 'pending', label: "待審核", date: ts, note: formType === 'maintenance' ? `已收到設備報修：${form.deviceType}` : "系統自動收件" }]
+                };
+                setIssues([newIssue, ...issues]);
+                setView('board');
+                setForm({ title: "", cat: "生活", content: "", anon: false, isSensitive: false, location: "", deviceType: "", priority: "一般" });
+                showAlert(`具象化通報成功！案件編號：${newIssue.caseId}`);
+            };
+
+            const handleAdminUpdate = (id) => {
+                const now = new Date();
+                const ts = `${now.getFullYear()}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getDate().toString().padStart(2,'0')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+                setIssues(issues.map(i => i.id === id ? { 
+                    ...i, 
+                    status: adminUpdate.status, 
+                    progress: adminUpdate.progress, 
+                    timeline: [...i.timeline, { status: adminUpdate.status, label: STATUS_STATS[adminUpdate.status].label, date: ts, note: adminUpdate.note }] 
+                } : i));
+                setAdminUpdate({ ...adminUpdate, note: '' });
+                showAlert("案件更新成功！");
+            };
+
+            const handleReconsider = (id) => {
+                showConfirm("確定要針對此案件發起覆議嗎？這將會重啟案件討論並進入覆議程序。", () => {
+                    const now = new Date();
+                    const ts = `${now.getFullYear()}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getDate().toString().padStart(2,'0')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+                    setIssues(issues.map(i => i.id === id ? {
+                        ...i,
+                        status: 'reconsidering',
+                        progress: 85,
+                        timeline: [...i.timeline, { status: 'reconsidering', label: "覆議中", date: ts, note: "通報人對處理結果提出覆議，已送交相關部門重審。" }]
+                    } : i));
+                    showAlert("覆議申請已受理！");
+                });
+            };
+
+            const filteredIssues = issues.filter(i => !searchQuery || i.caseId.includes(searchQuery) || i.title.includes(searchQuery));
+
+            return (
+                <div className="max-w-2xl mx-auto p-4 md:p-6 pb-20 space-y-6 fade-in">
+                    <div className="flex items-center justify-between bg-white p-4 rounded-[2rem] shadow-xl border border-gray-100 sticky top-4 z-50">
+                        <div className="flex items-center gap-3">
+                            <EditableLogo src={customLogo} onUpload={setCustomLogo} canEdit={isAdminAccess} />
+                            <div><div className="text-sm font-black text-slate-800 tracking-wider">真理學生會</div><span className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase tracking-widest ${STATUS_STATS.reviewing.color}`}>{currentUser.role}</span></div>
+                        </div>
+                        <div className="flex items-center gap-4">
+                            <Clock />
+                            <button onClick={onLogout} className="p-2.5 bg-red-50 text-red-500 rounded-full hover:bg-red-100 transition-all active:scale-90"><Icon path={icons.logOut} size={20}/></button>
+                        </div>
+                    </div>
+
+                    <div className="flex bg-white/60 backdrop-blur p-1.5 rounded-[1.5rem] shadow-inner border border-gray-100 overflow-x-auto scrollbar-hide">
+                        {['board', 'notices', 'submit', 'maintenance'].map(t => (
+                            <button key={t} onClick={() => setView(t)} className={`flex-1 py-3 px-4 rounded-2xl text-xs font-black transition-all tab-transition ${view === t ? 'bg-slate-900 text-white shadow-xl' : 'text-gray-500 hover:bg-white'}`}>
+                                {t === 'board' ? '案件看板' : t === 'notices' ? '系統公告' : t === 'submit' ? '一般通報' : '設備報修'}
+                            </button>
+                        ))}
+                        {isAdminAccess && <button onClick={() => setView('users')} className={`flex-1 py-3 px-4 rounded-2xl text-xs font-black transition-all ${view === 'users' ? 'bg-slate-900 text-white shadow-xl' : 'text-gray-500 hover:bg-white'}`}>人員管理</button>}
+                    </div>
+
+                    {view === 'board' && (
+                        <div className="space-y-4">
+                            <div className="relative group">
+                                <input type="text" placeholder="搜尋案件或標題..." className="w-full pl-12 pr-6 py-4 rounded-3xl bg-white border border-gray-100 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none shadow-xl transition-all" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+                                <div className="absolute left-4 top-4 text-gray-400 group-focus-within:text-blue-500 transition-colors"><Icon path={icons.hash} size={22}/></div>
+                            </div>
+                            
+                            {filteredIssues.map(item => {
+                                const isExpanded = expandedId === item.id;
+                                const statusCfg = STATUS_STATS[item.status];
+                                const isMaintenance = item.type === 'maintenance';
+                                const canReconsider = (item.status === 'resolved' || item.status === 'negotiating') && (item.author === currentUser.name || isAdminAccess);
+
+                                return (
+                                    <div key={item.id} className={`bg-white rounded-[2rem] shadow-sm border overflow-hidden transition-all duration-500 ${item.isSensitive ? 'border-l-8 border-l-red-500' : 'border-gray-50'} ${isExpanded ? 'ring-4 ring-blue-50 shadow-2xl' : 'hover:shadow-md'}`}>
+                                        <div onClick={() => setExpandedId(isExpanded ? null : item.id)} className="p-6 cursor-pointer text-slate-800">
+                                            <div className="flex flex-col gap-3">
+                                                <div className="flex justify-between items-start">
+                                                    <div className="flex flex-wrap gap-2">
+                                                        <span className={`text-[10px] px-2.5 py-1 rounded-xl font-black border uppercase ${isMaintenance ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+                                                            <div className="flex items-center gap-1">{isMaintenance ? <Icon path={icons.wrench} size={10}/> : <Icon path={icons.info} size={10}/>}{item.cat}</div>
+                                                        </span>
+                                                        {item.status === 'reconsidering' && <span className="bg-orange-50 text-orange-600 text-[10px] px-2.5 py-1 rounded-xl font-black border border-orange-100 animate-pulse">覆議中</span>}
+                                                    </div>
+                                                    <span className="font-mono text-[11px] font-bold text-slate-400">#{item.caseId}</span>
+                                                </div>
+                                                <h3 className="font-black text-xl leading-tight">{item.title}</h3>
+                                                
+                                                {isMaintenance && item.location && (
+                                                    <div className="flex items-center gap-1.5 text-xs text-slate-500 bg-gray-50 px-3 py-1.5 rounded-xl w-fit border border-gray-100 font-bold">
+                                                        <Icon path={icons.shield} size={12} className="text-amber-500"/>
+                                                        故障地點：{item.location}
+                                                    </div>
+                                                )}
+
+                                                <div className="flex items-center justify-between mt-3 pt-4 border-t border-gray-50">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className={`text-[11px] px-3 py-1 rounded-full border shadow-sm font-black transition-colors ${statusCfg.color}`}>{statusCfg.label}</div>
+                                                        <span className="text-[11px] text-gray-400 font-bold">{item.date}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {isExpanded && (
+                                            <div className="px-6 pb-6 pt-0 border-t border-gray-50 bg-gray-50/30 slide-up text-slate-800">
+                                                <div className="py-5">
+                                                    <p className="text-[15px] text-slate-600 leading-relaxed whitespace-pre-wrap bg-white p-5 rounded-2xl border border-gray-100 shadow-inner">{item.content}</p>
+                                                    {canReconsider && (
+                                                        <div className="mt-4 flex justify-end">
+                                                            <button onClick={(e) => {e.stopPropagation(); handleReconsider(item.id);}} className="flex items-center gap-2 px-5 py-2 bg-orange-50 text-orange-600 border border-orange-200 rounded-2xl text-xs font-black hover:bg-orange-100 transition-all active:scale-95">
+                                                                <Icon path={icons.gavel} size={14}/> 我要覆議
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <div className="mb-8 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                                                    <div className="flex justify-between text-[11px] mb-2 font-black text-slate-400 uppercase tracking-widest"><span>處理進度</span><span className="text-blue-600">{item.progress}%</span></div>
+                                                    <div className="h-2.5 w-full bg-gray-100 rounded-full overflow-hidden shadow-inner"><div className={`h-full transition-all duration-1000 ease-out ${statusCfg.barColor}`} style={{width: `${item.progress}%`}}></div></div>
+                                                </div>
+                                                <TimelineSection item={item} hasAccess={true} />
+                                                {canManageIssues && (
+                                                    <div className="bg-slate-900 text-white p-6 rounded-[2.5rem] shadow-2xl mt-6 border-t border-white/10">
+                                                        <div className="flex items-center gap-2 mb-5 font-black text-lg border-b border-white/10 pb-3"><Icon path={icons.shield} className="text-blue-400" size={20}/> 案件處理中心</div>
+                                                        <div className="space-y-5">
+                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                                                                <div>
+                                                                    <label className="text-[10px] text-slate-400 block mb-2 font-black uppercase tracking-widest px-1">階段狀態切換</label>
+                                                                    <select className="w-full bg-slate-800 border-none rounded-2xl text-sm p-3.5 outline-none focus:ring-2 ring-blue-500 transition-all font-bold appearance-none cursor-pointer" value={adminUpdate.status} onChange={e => { const ns = e.target.value; setAdminUpdate({...adminUpdate, status: ns, progress: STATUS_STATS[ns].defaultProgress}); }}>{STATUS_ORDER.map(k => <option key={k} value={k}>{STATUS_STATS[k].label}</option>)}</select>
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-[10px] text-slate-400 block mb-2 font-black uppercase tracking-widest px-1">程度 ({adminUpdate.progress}%)</label>
+                                                                    <input type="range" min="0" max="4" step="1" value={STATUS_ORDER.indexOf(adminUpdate.status)} onChange={e => { const ns = STATUS_ORDER[parseInt(e.target.value)]; setAdminUpdate({...adminUpdate, status: ns, progress: STATUS_STATS[ns].defaultProgress}); }} className="w-full h-1.5 mt-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500" />
+                                                                </div>
+                                                            </div>
+                                                            <div><textarea rows="3" className="w-full bg-slate-800 border-none rounded-2xl text-sm p-4 outline-none text-white placeholder-slate-500 focus:ring-2 ring-blue-500 transition-all font-medium resize-none shadow-inner" placeholder="輸入處理備註..." value={adminUpdate.note} onChange={e => setAdminUpdate({...adminUpdate, note: e.target.value})}/></div>
+                                                            <button onClick={() => handleAdminUpdate(item.id)} className="w-full bg-blue-600 hover:bg-blue-500 py-4 rounded-2xl text-sm font-black transition-all active:scale-95 shadow-xl shadow-blue-500/10">發布處理更新</button>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    )}
+
+                    {(view === 'submit' || view === 'maintenance') && (
+                        <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl border border-gray-50 slide-up">
+                            <div className="flex items-center gap-3 mb-8">
+                                <div className={`p-4 rounded-3xl ${view === 'maintenance' ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'}`}><Icon path={view === 'maintenance' ? icons.wrench : icons.plus} size={32} /></div>
+                                <div><h2 className="text-2xl font-black text-slate-800 tracking-tight">{view === 'maintenance' ? '設備故障報修' : '新增一般通報'}</h2><p className="text-xs text-slate-400 mt-1 font-bold">請提供精確資訊以利具象化處理流程。</p></div>
+                            </div>
+                            <form onSubmit={handleReportSubmit} className="space-y-6">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="md:col-span-2"><label className="block text-[11px] font-black text-slate-400 mb-2 px-1 uppercase tracking-widest">案件標題</label><input required className="w-full px-5 py-4 bg-gray-50 rounded-2xl border border-gray-100 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 shadow-inner font-bold" value={form.title} onChange={e => setForm({...form, title: e.target.value})} placeholder="例如：飲水機漏水、燈管閃爍..."/></div>
+                                    {view === 'maintenance' && (
+                                        <>
+                                            <div><label className="block text-[11px] font-black text-slate-400 mb-2 px-1 uppercase tracking-widest">故障地點</label><input required className="w-full px-5 py-4 bg-gray-50 rounded-2xl border border-gray-100 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 shadow-inner font-bold" value={form.location} onChange={e => setForm({...form, location: e.target.value})} placeholder="例如：三教 401 教室"/></div>
+                                            <div><label className="block text-[11px] font-black text-slate-400 mb-2 px-1 uppercase tracking-widest">設備類型</label><input required className="w-full px-5 py-4 bg-gray-50 rounded-2xl border border-gray-100 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 shadow-inner font-bold" value={form.deviceType} onChange={e => setForm({...form, deviceType: e.target.value})} placeholder="例如：投影機、空調"/></div>
+                                        </>
+                                    )}
+                                    <div><label className="block text-[11px] font-black text-slate-400 mb-2 px-1 uppercase tracking-widest">案件分類</label><select className="w-full px-5 py-4 bg-gray-50 rounded-2xl border border-gray-100 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 font-bold" value={form.cat} onChange={e => setForm({...form, cat: e.target.value})}>{['生活', '教務', '學務', '總務', '環境', '校安'].map(o => <option key={o} value={o}>{o}</option>)}</select></div>
+                                    <div><label className="block text-[11px] font-black text-slate-400 mb-2 px-1 uppercase tracking-widest">緊急程度</label><div className="flex gap-2 p-1.5 bg-gray-50 rounded-2xl border border-gray-100 shadow-inner">
+                                        {['一般', '急件', '特急'].map(p => (<button key={p} type="button" onClick={() => setForm({...form, priority: p})} className={`flex-1 py-2 rounded-xl text-xs font-black transition-all ${form.priority === p ? 'bg-white shadow-md text-blue-600 ring-1 ring-blue-100' : 'text-gray-400'}`}>{p}</button>))}
+                                    </div></div>
+                                </div>
+                                <div><label className="block text-[11px] font-black text-slate-400 mb-2 px-1 uppercase tracking-widest">具體內容描述</label><textarea required rows="4" className="w-full px-5 py-4 bg-gray-50 rounded-2xl border border-gray-100 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 shadow-inner font-medium resize-none" value={form.content} onChange={e => setForm({...form, content: e.target.value})} placeholder="請詳細描述問題情況..."/></div>
+                                <div className="flex items-center justify-between pt-4 border-t border-gray-100">
+                                    <label className="flex items-center gap-3 cursor-pointer group"><input type="checkbox" checked={form.anon} onChange={e => setForm({...form, anon: e.target.checked})} className="w-5 h-5 rounded-lg border-gray-300 text-blue-600 focus:ring-blue-500 transition-all"/><span className="text-sm font-bold text-gray-500 group-hover:text-blue-600">匿名通報</span></label>
+                                    <button className="bg-slate-900 hover:bg-slate-800 text-white px-10 py-4 rounded-2xl font-black shadow-2xl transition-all active:scale-95 tracking-widest">送出報告</button>
+                                </div>
+                            </form>
+                        </div>
+                    )}
+
+                    {view === 'users' && isAdminAccess && (
+                        <div className="space-y-6 slide-up">
+                            <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl border border-gray-50 text-slate-800">
+                                <h2 className="font-black text-2xl mb-6 flex items-center gap-3"><Icon path={icons.user} size={24} className="text-blue-500"/> 人員權限管理系統</h2>
+                                <div className="mb-6">
+                                    <div className="flex items-center gap-2 mb-2"><Icon path={icons.zap} size={16} className="text-amber-500"/><span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">快速範本</span></div>
+                                    <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+                                        {(quickTemplates[userTab] || []).map((t, i) => <button key={i} onClick={() => {
+                                            const rand = Math.floor(100+Math.random()*900);
+                                            setNewUser({...newUser, department:t.val.department, username:`${t.val.prefix}${rand}`, name:`新${t.val.department}人員`, role:userTab});
+                                        }} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-[11px] font-black whitespace-nowrap hover:bg-blue-100 transition-colors border border-blue-100 flex items-center gap-1 shadow-sm"><Icon path={icons.plus} size={10} />{t.name}</button>)}
+                                    </div>
+                                </div>
+                                <div className="flex gap-2 mb-6 border-b pb-6 overflow-x-auto scrollbar-hide">
+                                    {['superadmin', 'admin', 'teacher', 'student'].map(r => <button key={r} onClick={() => setUserTab(r)} className={`px-5 py-3 rounded-2xl text-xs font-black transition-all ${userTab === r ? 'bg-slate-900 text-white shadow-xl' : 'text-gray-400 hover:bg-gray-100'}`}>{roleConfig[r].label}</button>)}
+                                </div>
+                                <form onSubmit={(e) => { e.preventDefault(); if(userDb.some(u=>u.username===newUser.username)) return showAlert("帳號已存在！"); setUserDb([...userDb, {...newUser, password:newUser.username}]); setNewUser({username:"", password:"", name:"", role:userTab, department:""}); showAlert("帳戶建立成功！"); }} className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div><label className="block text-[11px] font-black text-slate-400 mb-2 uppercase tracking-widest">學工號 (帳號)</label><input required className="w-full px-5 py-3.5 bg-gray-50 rounded-2xl border border-gray-100 outline-none focus:ring-2 focus:ring-blue-500 font-bold" value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} /></div>
+                                    <div><label className="block text-[11px] font-black text-slate-400 mb-2 uppercase tracking-widest">人員姓名</label><input required className="w-full px-5 py-3.5 bg-gray-50 rounded-2xl border border-gray-100 outline-none focus:ring-2 focus:ring-blue-500 font-bold" value={newUser.name} onChange={e => setNewUser({...newUser, name: e.target.value})} /></div>
+                                    <div className="md:col-span-2"><label className="block text-[11px] font-black text-slate-400 mb-2 uppercase tracking-widest">單位系所</label><input className="w-full px-5 py-3.5 bg-gray-50 rounded-2xl border border-gray-100 outline-none focus:ring-2 focus:ring-blue-500 font-bold" value={newUser.department} onChange={e => setNewUser({...newUser, department: e.target.value})} /></div>
+                                    <button className="md:col-span-2 bg-slate-900 text-white py-4 rounded-2xl font-black shadow-xl hover:bg-slate-800 transition-all active:scale-95">核發權限</button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [currentUser, setCurrentUser] = useState(null);
+            const [userDb, setUserDb] = useState([]);
+            const [notices, setNotices] = useState([]);
+            const [modal, setModal] = useState(null);
+            const [customLogo, setCustomLogo] = useState(localStorage.getItem('customLogo') || "");
+
+            useEffect(() => {
+                setUserDb(parseCSV(DEFAULT_USERS_CSV));
+                setNotices(parseCSV(DEFAULT_NOTICES_CSV));
+            }, []);
+
+            const showAlert = (m) => setModal({ title: '系統訊息', message: m, type: 'info', onConfirm: () => setModal(null) });
+            const showConfirm = (m, onC) => setModal({ title: '確認操作', message: m, type: 'confirm', onConfirm: () => { onC(); setModal(null); }, onCancel: () => setModal(null) });
+            const handleSetLogo = (l) => { setCustomLogo(l); localStorage.setItem('customLogo', l); };
+
+            return (
+                <>
+                    {modal && <Modal config={modal} />}
+                    {currentUser ? (
+                        <MainApp currentUser={currentUser} onLogout={() => setCurrentUser(null)} userDb={userDb} setUserDb={setUserDb} notices={notices} showAlert={showAlert} showConfirm={showConfirm} showModal={setModal} customLogo={customLogo} setCustomLogo={handleSetLogo} />
+                    ) : (
+                        <LoginScreen onLogin={setCurrentUser} userDb={userDb} customLogo={customLogo} notices={notices} />
+                    )}
+                </>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
